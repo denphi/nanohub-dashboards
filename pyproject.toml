@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanohub-dashboards"
+version = "0.1.0"
+description = "Python client library for interacting with the nanoHUB Dashboard API"
+readme = "README.md"
+requires-python = ">=3.6"
+license = {text = "MIT"}
+authors = [
+    {name = "nanoHUB", email = "support@nanohub.org"}
+]
+keywords = ["nanohub", "dashboard", "visualization", "plotly"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "requests",
+    "plotly",
+    "pandas",
+    "nanohub-remote"
+]
+
+[project.urls]
+Homepage = "https://nanohub.org"
+Repository = "https://github.com/denphi/nanohub-dashboards"
+Documentation = "https://github.com/denphi/nanohub-dashboards#readme"
+Issues = "https://github.com/denphi/nanohub-dashboards/issues"
