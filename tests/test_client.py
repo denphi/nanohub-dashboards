@@ -78,7 +78,7 @@ class TestDashboardClient:
         mock_request.assert_called_once()
     
     @patch('nanohubdashboard.client.DashboardClient._make_request')
-    def test_update_dashboard(self, mock_request, mock_session):
+    def test_update_dashboard(self, mock_request, mock_session, mock_requests):
         """Test updating a dashboard."""
         mock_request.return_value = {"success": True}
         
@@ -88,7 +88,9 @@ class TestDashboardClient:
         result = client.update_dashboard(dashboard_id=1, dashboard=config)
         
         assert result is True
-        mock_request.assert_called_once()
+        # update_dashboard uses requests.post directly, not _make_request
+        # so we check if requests.post was called
+        mock_requests['post'].assert_called_once()
     
     @patch('nanohubdashboard.client.DashboardClient._make_request')
     def test_delete_dashboard(self, mock_request, mock_session):
@@ -144,9 +146,9 @@ class TestDashboardClient:
         """Test _make_request handles authentication errors."""
         client = DashboardClient(session=mock_session)
         
-        # Mock a 401 response
+        # Mock a 403 response (Forbidden/Auth failed)
         mock_response = Mock()
-        mock_response.status_code = 401
+        mock_response.status_code = 403
         mock_response.text = "Unauthorized"
         
         with patch.object(mock_session, 'requestGet', return_value=mock_response):

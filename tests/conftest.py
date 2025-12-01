@@ -116,18 +116,10 @@ def sample_dashboard_config():
                 "group-menu": False
             }
         ],
-        "queries": [
-            {
-                "id": 1,
-                "name": "test_query_1",
-                "query": "SELECT * FROM table1"
-            },
-            {
-                "id": 2,
-                "name": "test_query_2",
-                "query": "SELECT * FROM table2"
-            }
-        ]
+        "queries": {
+            "test_query_1": "SELECT * FROM table1",
+            "test_query_2": "SELECT * FROM table2"
+        }
     }
 
 
