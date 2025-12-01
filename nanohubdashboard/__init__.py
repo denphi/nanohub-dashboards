@@ -5,6 +5,7 @@ from .client import DashboardClient
 from .query import Query
 from .template import Template
 from .config import DashboardConfig
+from .__version__ import __version__
 
 __all__ = [
     'Dashboard',
@@ -13,5 +14,6 @@ __all__ = [
     'DashboardClient',
     'Query',
     'Template',
-    'DashboardConfig'
+    'DashboardConfig',
+    '__version__'
 ]
