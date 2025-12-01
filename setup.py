@@ -1,8 +1,14 @@
 from setuptools import setup, find_packages
 
+import os
+
+# Read version from __version__.py
+with open(os.path.join("nanohubdashboard", "__version__.py")) as f:
+    exec(f.read())
+
 setup(
     name="nanohub-dashboards",
-    version="0.1.0",
+    version=__version__,
     description="Python client library for interacting with the nanoHUB Dashboard API",
     author="nanoHUB",
     author_email="support@nanohub.org",
