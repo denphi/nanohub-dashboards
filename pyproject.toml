@@ -32,6 +32,22 @@ dependencies = [
     "nanohub-remote"
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-mock>=3.10",
+    "responses>=0.22"
+]
+docs = [
+    "sphinx>=5.0",
+    "sphinx-rtd-theme>=1.2",
+    "sphinx-autodoc-typehints>=1.19"
+]
+dev = [
+    "nanohub-dashboards[test,docs]"
+]
+
 [project.urls]
 Homepage = "https://nanohub.org"
 Repository = "https://github.com/denphi/nanohub-dashboards"
