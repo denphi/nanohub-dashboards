@@ -29,6 +29,64 @@ class Dashboard:
         self._current_graph_idx = 0
         self._current_plot_idx = 0
 
+    def _safe_json_parse(self, json_str: str, graph_idx: int, field_name: str) -> Any:
+        """
+        Safely parse JSON with better error handling.
+        
+        Args:
+            json_str: JSON string to parse
+            graph_idx: Graph index for error reporting
+            field_name: Field name for error reporting
+            
+        Returns:
+            Parsed JSON object, or None if parsing fails
+        """
+        if not json_str or json_str.strip() in ['', '[]', '{}']:
+            return [] if json_str.strip() == '[]' else {}
+            
+        try:
+            # Fix placeholder variables that aren't quoted
+            # This regex matches %VARIABLE patterns that appear after : or , but NOT inside quoted strings
+            # We need to be careful not to match % inside strings like "%b, %Y" (date formats)
+            
+            # Strategy: Only quote %VARIABLE if it's not already inside quotes
+            # Match pattern: colon/comma followed by whitespace and %WORD (not in quotes)
+            # This is a simplified approach - we look for unquoted placeholders
+            fixed_str = json_str
+            
+            # Match ': %variable' or ', %variable' patterns where %variable is not quoted
+            # Replace with ': "%variable"' or ', "%variable"'
+            def quote_placeholder(match):
+                prefix = match.group(1)  # : or ,
+                spaces = match.group(2)  # whitespace
+                placeholder = match.group(3)  # %variable
+                return f'{prefix}{spaces}"{placeholder}"'
+            
+            # This pattern matches: (: or ,)(whitespace)(%WORD) but only if not already in quotes
+            # We check the next character after %WORD - if it's a comma or closing bracket, it's likely unquoted
+            fixed_str = re.sub(r'([:,])(\s*)(%[A-Z_a-z0-9]+)(?=\s*[,\]\}])', quote_placeholder, fixed_str)
+            
+            # Try to parse
+            return json.loads(fixed_str)
+        except json.JSONDecodeError as e:
+            # Provide detailed error information for debugging
+            lines = json_str.split('\n')
+            error_line = lines[e.lineno - 1] if e.lineno <= len(lines) else "N/A"
+            
+            # Check if this looks like truncated JSON
+            if not json_str.rstrip().endswith(('}', ']', '"')):
+                print(f"Warning: Graph {graph_idx} {field_name} appears truncated or incomplete")
+            else:
+                print(f"Warning: Graph {graph_idx} {field_name} has invalid JSON at line {e.lineno}, col {e.colno}")
+                print(f"  Error: {e.msg}")
+                if len(error_line) < 100:
+                    print(f"  Line: {error_line.strip()}")
+            
+            return None
+        except Exception as e:
+            print(f"Warning: Graph {graph_idx} {field_name} parsing failed: {e}")
+            return None
+
     def load(self, dashboard_id: int):
         """
         Load a dashboard from the API.
@@ -52,32 +110,36 @@ class Dashboard:
 
         # Process graphs and create Graph objects
         self.graphs = []
+        parse_errors = 0
+        
         for idx, (graph_config, raw_graph) in enumerate(zip(self.config.graphs, raw_graphs)):
             # Use the graph config from the API response, but populate it with plot templates from raw data
             
-            # Parse plot template
+            # Parse plot template and layout
             plot_template_str = raw_graph.get('plot', '[]')
             layout_str = raw_graph.get('layout', '{}')
-
-            # Initialize variables
-            plot_configs = []
-            layout = {}
             html_content = raw_graph.get('html', '')
+
+            # Try to parse plot configs
+            plot_configs = self._safe_json_parse(plot_template_str, idx, 'plot')
+            layout = self._safe_json_parse(layout_str, idx, 'layout')
             
-            try:
-                # Parse plot templates
-                fixed_template = re.sub(r':\s*(%[A-Z_]+)', r': "\1"', plot_template_str)
-                fixed_template = re.sub(r',\s*(%[A-Z_]+)', r', "\1"', fixed_template)
-                plot_configs = json.loads(fixed_template)
-                layout = json.loads(layout_str)
-            except Exception as e:
-                # If parsing fails, check if we have HTML content
-                if not html_content:
-                    print(f"Warning: Could not parse graph {idx}: {e}")
-                    # Only skip if we have no HTML content either
-                    continue
-                else:
-                    print(f"Note: Graph {idx} has invalid plot config but valid HTML content. Loading as HTML graph.")
+            # Handle parsing failures
+            if plot_configs is None:
+                plot_configs = []
+                parse_errors += 1
+                
+            if layout is None:
+                layout = {}
+                parse_errors += 1
+            
+            # Skip graphs that have no valid data
+            if not plot_configs and not html_content:
+                continue
+            
+            # If we have HTML content but no plot config, that's okay
+            if html_content and not plot_configs:
+                print(f"Note: Graph {idx} has HTML content but no valid plot config. Loading as HTML-only graph.")
             
             try:
                 # Update the graph object with parsed configs
@@ -96,8 +158,12 @@ class Dashboard:
                 
             except Exception as e:
                 print(f"Warning: Could not create graph object for {idx}: {e}")
+                parse_errors += 1
 
-        print(f"✓ Loaded {len(self.graphs)} graphs")
+        # Summary
+        if parse_errors > 0:
+            print(f"⚠ Encountered {parse_errors} parsing error(s)")
+        print(f"✓ Loaded {len(self.graphs)} graphs successfully")
         return self
 
     def get_graph(self, index: int) -> Graph:
