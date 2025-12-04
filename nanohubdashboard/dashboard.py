@@ -383,7 +383,6 @@ class Dashboard:
             params_dict = self.config.params if isinstance(self.config.params, dict) else json.loads(self.config.params)
 
         # Call the preview endpoint
-        print(f"Previewing dashboard {self.id}...")
         html_content = self.client.preview_dashboard(
             datasource_id=self.config.datasource_id,
             template_id=self.config.template_id,

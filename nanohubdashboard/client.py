@@ -68,15 +68,12 @@ def _display_in_jupyter(file_path, height=800):
         if _is_jupyter_notebook():
             # Use iframe for classic Jupyter Notebook
             display(IFrame(src=file_path, width='100%', height=height))
-            print(f"Displaying dashboard in iframe")
         elif _is_jupyterlab():
             # Open in new tab for JupyterLab
             webbrowser.open(f'file://{os.path.abspath(file_path)}')
-            print(f"Opening dashboard in new browser tab")
         else:
             # Fallback to iframe for other IPython environments
             display(IFrame(src=file_path, width='100%', height=height))
-            print(f"Displaying dashboard in iframe")
         return True
     except ImportError:
         return False
@@ -92,17 +89,14 @@ def _display_html_in_jupyter(file_path):
             with open(file_path, 'r', encoding='utf-8') as f:
                 html_content = f.read()
             display(HTML(html_content))
-            print(f"Displaying preview form inline")
         elif _is_jupyterlab():
             # Open in new tab for JupyterLab
             webbrowser.open(f'file://{os.path.abspath(file_path)}')
-            print(f"Opening preview in new browser tab")
         else:
             # Fallback to HTML display for other IPython environments
             with open(file_path, 'r', encoding='utf-8') as f:
                 html_content = f.read()
             display(HTML(html_content))
-            print(f"Displaying preview form inline")
         return True
     except ImportError:
         return False
@@ -511,7 +505,6 @@ class DashboardClient:
         # The session URL is typically https://example.com/api
         # We need to post to https://example.com/index.php?option=com_dashboards&controller=dashboards&task=preview
         site_url = f"{self.session.url}/dashboards/dashboard/preview"
-        print(site_url)
 
         # Prepare headers with authentication
         headers = dict(self.session.headers)
