@@ -872,22 +872,9 @@ class DashboardClient:
             # Get plot template
             # Check if the graph object has plots
             if hasattr(graph, 'plots') and graph.plots:
-                # Check if this is a loaded graph (has raw_graph data) or a new graph
-                has_raw_plot = raw_graph and raw_graph.get('plot')
-
-                if has_raw_plot:
-                    # Loaded graph - use raw_graph for template (handles placeholders correctly)
-                    plot_template_str = raw_graph.get('plot', '[]')
-                    try:
-                        fixed_template = self._fix_json_placeholders(plot_template_str)
-                        plot_templates = json.loads(fixed_template)
-                    except Exception as e:
-                        print(
-                            f"  ⚠ Warning: Could not parse plot template for graph {idx+1}: {e}")
-                        continue
-                else:
-                    # New graph - use plots directly (already have proper config)
-                    plot_templates = [p.config for p in graph.plots]
+                # Use the plot configs from graph.plots (which may have been modified)
+                # The placeholders are preserved in these configs
+                plot_templates = [p.config for p in graph.plots]
             # Then check if it has plot_config directly
             elif hasattr(graph, 'plot_config') and graph.plot_config:
                 # If it's a dict, wrap in list

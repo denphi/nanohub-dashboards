@@ -1,6 +1,5 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Any, Optional
 import json
-import copy
 import re
 from .client import DashboardClient, _display_html_in_jupyter
 from .graph import Graph
@@ -26,8 +25,6 @@ class Dashboard:
         self.id: Optional[int] = None
         self.config: Optional[DashboardConfig] = None
         self.graphs: List[Graph] = []
-        self._current_graph_idx = 0
-        self._current_plot_idx = 0
 
     def _safe_json_parse(self, json_str: str, graph_idx: int, field_name: str) -> Any:
         """
@@ -242,18 +239,12 @@ class Dashboard:
         if not self.id:
             raise ValueError("No dashboard loaded. Call load() first.")
 
-        # Track which plot we're currently processing
-        self._current_graph_idx = 0
-        self._current_plot_idx = 0
-
-        # Set transformer to apply our modifications
-        self.client.set_plot_transformer(self._apply_plot_modifications)
-
         # Sync graphs to config
         if self.config:
             self.config.graphs = self.graphs
 
         # Visualize using the client
+        # The client will use the modified plot configs from graph.plots
         result = self.client.visualize(
             dashboard_id=self.id,
             output_file=output_file or f"dashboard_{self.id}.html",
@@ -261,41 +252,8 @@ class Dashboard:
             dashboard_config=self.config
         )
 
-        # Clear transformer
-        self.client.set_plot_transformer(None)
-
         return result
 
-    def _apply_plot_modifications(self, plot_config: Dict, graph: Any = None, plot_index: int = 0) -> Dict:
-        """
-        Apply plot modifications when visualizing.
-        """
-        # Get the corresponding modified plot
-        if graph and hasattr(graph, 'plots') and plot_index < len(graph.plots):
-            plot = graph.plots[plot_index]
-
-            # Check if the plot types match - if not, this template doesn't correspond to this plot object
-            # This happens when processing unique traces separately (they have different indices)
-            if plot_config.get('type') != plot.type:
-                # Types don't match - return original template unchanged
-                return plot_config
-
-            # Copy the modified config
-            result = copy.deepcopy(plot._config)
-
-            # Keep original data placeholders (fields starting with %)
-            for key, value in plot_config.items():
-                if isinstance(value, str) and value.startswith('%'):
-                    result[key] = value
-                elif isinstance(value, list):
-                    # Handle arrays that might contain placeholders
-                    result[key] = value
-
-            return result
-
-        # Fallback: return original
-        return plot_config
-        
     def save(self):
         """
         Save the current dashboard configuration back to the server.
