@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 import json
 import copy
 import re
-from .client import DashboardClient
+from .client import DashboardClient, _display_html_in_jupyter
 from .graph import Graph
 from .plot import Plot
 from .config import DashboardConfig
@@ -274,6 +274,12 @@ class Dashboard:
         if graph and hasattr(graph, 'plots') and plot_index < len(graph.plots):
             plot = graph.plots[plot_index]
 
+            # Check if the plot types match - if not, this template doesn't correspond to this plot object
+            # This happens when processing unique traces separately (they have different indices)
+            if plot_config.get('type') != plot.type:
+                # Types don't match - return original template unchanged
+                return plot_config
+
             # Copy the modified config
             result = copy.deepcopy(plot._config)
 
@@ -386,33 +392,24 @@ class Dashboard:
             params=params_dict
         )
 
-        # Determine if we should use a temporary file
-        use_temp_file = (output_file is None and open_browser)
+        # Always save to a regular file (not temporary)
+        if not output_file:
+            output_file = f"dashboard_{self.id}_preview.html"
 
-        if use_temp_file:
-            import tempfile
-            # Create a temporary file that won't be deleted immediately
-            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8')
-            temp_file.write(html_content)
-            temp_file.close()
-            output_file = temp_file.name
-            print(f"✓ Preview generated in temporary file")
-        else:
-            # Save to file
-            if not output_file:
-                output_file = f"dashboard_{self.id}_preview.html"
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html_content)
 
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(html_content)
+        print(f"✓ Preview saved to {output_file}")
 
-            print(f"✓ Preview saved to {output_file}")
-
-        # Open in browser if requested
+        # Open in browser or display in Jupyter if requested
         if open_browser:
-            import webbrowser
-            import os
-            webbrowser.open(f'file://{os.path.abspath(output_file)}')
-            print("Opening in browser...")
+            # Try Jupyter HTML display first (for forms with hidden parameters)
+            if not _display_html_in_jupyter(output_file):
+                # Fallback to regular browser for non-Jupyter environments
+                import webbrowser
+                import os
+                webbrowser.open(f'file://{os.path.abspath(output_file)}')
+                print("Opening in browser...")
 
         return output_file
 
