@@ -1,6 +1,8 @@
 from typing import List, Dict, Any, Optional
 import copy
 import json
+import os
+import webbrowser
 from dataclasses import dataclass, field
 from .plot import Plot
 
@@ -108,6 +110,154 @@ class Graph:
     def get_layout(self, key: str, default: Any = None) -> Any:
         """Get a layout property."""
         return self.layout_config.get(key, default)
+
+    def visualize(self, data: Optional[Dict[str, list]] = None,
+                  layout: Optional[Dict[str, Any]] = None,
+                  output_file: Optional[str] = None,
+                  open_browser: bool = True) -> str:
+        """
+        Render this graph (all its plots) as a standalone HTML file.
+
+        Args:
+            data: Optional dictionary containing data to replace placeholders in plot configs.
+                  Keys should match placeholder names (case-insensitive, without % prefix).
+                  Example: {'x': [1, 2, 3], 'y': [4, 5, 6], 'name': ['Series 1']}
+            layout: Optional layout configuration. If not provided, uses graph's layout_config.
+            output_file: Path to save HTML file. Defaults to 'graph_{index}.html'
+            open_browser: Whether to open the HTML file in a browser
+
+        Returns:
+            Path to the generated HTML file
+        """
+        # Determine output file
+        if output_file is None:
+            output_file = f'graph_{self.index}.html'
+
+        # Prepare layout
+        if layout is None:
+            layout = copy.deepcopy(self.layout_config) if self.layout_config else {}
+        else:
+            layout = copy.deepcopy(layout)
+
+        # Set defaults if not specified
+        if 'autosize' not in layout:
+            layout['autosize'] = True
+        if 'margin' not in layout:
+            layout['margin'] = {'l': 50, 'r': 50, 't': 50, 'b': 50}
+
+        # Process all plots
+        plots_data = []
+        for plot in self.plots:
+            plot_config = copy.deepcopy(plot.config)
+
+            # Replace placeholders with data if provided
+            if data:
+                plot_config = self._replace_placeholders(plot_config, data)
+
+            plots_data.append(plot_config)
+
+        # Generate HTML
+        title = f"Graph {self.index}" if not self.id else f"Graph {self.id}"
+        html_content = self._generate_html(plots_data, layout, title)
+
+        # Write to file
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+
+        # Display in browser or Jupyter
+        abs_path = os.path.abspath(output_file)
+        if open_browser:
+            # Try Jupyter display first
+            if not self._display_in_jupyter(output_file):
+                # Fallback to browser
+                webbrowser.open(f'file://{abs_path}')
+
+        return abs_path
+
+    def _replace_placeholders(self, config: Any, data: Dict[str, list]) -> Any:
+        """
+        Recursively replace placeholders in plot config with actual data.
+
+        Args:
+            config: Plot configuration (can be dict, list, or primitive)
+            data: Dictionary mapping field names to data arrays
+
+        Returns:
+            Config with placeholders replaced
+        """
+        if isinstance(config, dict):
+            return {k: self._replace_placeholders(v, data) for k, v in config.items()}
+        elif isinstance(config, list):
+            return [self._replace_placeholders(item, data) for item in config]
+        elif isinstance(config, str) and config.startswith('%'):
+            # Extract field name (remove %)
+            field_name = config[1:].lower()
+            # Create case-insensitive lookup
+            data_lower = {k.lower(): v for k, v in data.items()}
+            if field_name in data_lower:
+                return data_lower[field_name]
+            else:
+                return config  # Keep placeholder if no data found
+        else:
+            return config
+
+    def _display_in_jupyter(self, file_path: str) -> bool:
+        """Try to display HTML file in Jupyter environment."""
+        try:
+            from IPython.display import IFrame, display
+            import IPython
+
+            # Check if in Jupyter
+            ipython = IPython.get_ipython()
+            if ipython is None:
+                return False
+
+            # Display using IFrame
+            display(IFrame(src=file_path, width='100%', height=600))
+            return True
+        except (ImportError, AttributeError):
+            return False
+
+    def _generate_html(self, plots_data: list, layout: Dict[str, Any], title: str) -> str:
+        """
+        Generate standalone HTML with Plotly visualization.
+
+        Args:
+            plots_data: List of plot configurations
+            layout: Layout configuration
+            title: HTML page title
+
+        Returns:
+            Complete HTML string
+        """
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{title}</title>
+    <script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }}
+        #plot {{
+            width: 100%;
+            height: 600px;
+        }}
+    </style>
+</head>
+<body>
+    <div id="plot"></div>
+    <script>
+        const data = {json.dumps(plots_data)};
+        const layout = {json.dumps(layout)};
+
+        Plotly.newPlot('plot', data, layout, {{responsive: true}});
+    </script>
+</body>
+</html>
+"""
 
     def __repr__(self):
         return f"Graph(id={self.id}, index={self.index}, plots={len(self.plots)}, zone={self.zone})"
