@@ -217,9 +217,11 @@ class TestQueryAuthorization:
 class TestQueryAuthorizationRecommendations:
     """Tests that document recommended approaches when facing auth issues."""
 
+    @patch('webbrowser.open')
     @patch('builtins.open', create=True)
     @patch('nanohubdashboard.client.DashboardClient.preview_dashboard')
-    def test_preview_is_recommended_alternative(self, mock_preview, mock_open, mock_session):
+    def test_preview_is_recommended_alternative(self, mock_preview, mock_open,
+                                                mock_browser, mock_session):
         """
         Document that preview() is the recommended method when direct queries fail.
 

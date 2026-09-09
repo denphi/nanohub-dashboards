@@ -13,7 +13,7 @@ setup(
     author="nanoHUB",
     author_email="support@nanohub.org",
     url="https://github.com/denphi/nanohub-dashboards",
-    packages=find_packages(exclude=["examples", "examples.*"]),
+    packages=find_packages(exclude=["examples", "examples.*", "tests", "tests.*", "docs", "docs.*"]),
     install_requires=[
         "requests",
         "plotly",

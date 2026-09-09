@@ -234,44 +234,34 @@ class TestDashboard:
         assert "Test Dashboard" in repr_str
         assert "graphs=2" in repr_str
     
-    def test_dashboard_apply_plot_modifications(self, mock_session, sample_plot_config):
-        """Test _apply_plot_modifications method."""
-        dashboard = Dashboard(mock_session)
-        
-        # Create a graph with a modified plot
+    def test_dashboard_plot_modifications_are_serialized(self, mock_session, sample_plot_config):
+        """Plot modifications on a Graph are carried into its serialized form."""
+        import json
+
         graph = Graph(plot_config=sample_plot_config)
         plot = graph.plots[0]
         plot.set("opacity", 0.5)
-        
-        # Apply modifications
-        result = dashboard._apply_plot_modifications(
-            sample_plot_config,
-            graph=graph,
-            plot_index=0
-        )
-        
-        assert result["opacity"] == 0.5
-        assert result["type"] == "scatter"
-    
-    def test_dashboard_apply_plot_modifications_preserves_placeholders(self, mock_session, sample_plot_config):
-        """Test that _apply_plot_modifications preserves data placeholders."""
-        dashboard = Dashboard(mock_session)
-        
-        # Create a graph with a modified plot
-        graph = Graph(plot_config=sample_plot_config)
+
+        serialized = graph.to_dict()
+        plots = json.loads(serialized["plot"])
+
+        assert plots[0]["opacity"] == 0.5
+        assert plots[0]["type"] == "scatter"
+
+    def test_dashboard_plot_modifications_preserve_placeholders(self, mock_session, sample_plot_config):
+        """Placeholders in plot configs survive modification and serialization."""
+        import json
+
+        config = sample_plot_config.copy()
+        config["x"] = "%X_DATA"
+
+        graph = Graph(plot_config=config)
         plot = graph.plots[0]
-        plot.set("x", "modified_x")  # This should be overridden by placeholder
-        
-        # Original config with placeholder
-        original_config = sample_plot_config.copy()
-        original_config["x"] = "%X_DATA"
-        
-        # Apply modifications
-        result = dashboard._apply_plot_modifications(
-            original_config,
-            graph=graph,
-            plot_index=0
-        )
-        
-        # Placeholder should be preserved
-        assert result["x"] == "%X_DATA"
+        plot.set("opacity", 0.5)
+
+        serialized = graph.to_dict()
+        plots = json.loads(serialized["plot"])
+
+        # Placeholder should be preserved alongside the modification
+        assert plots[0]["x"] == "%X_DATA"
+        assert plots[0]["opacity"] == 0.5

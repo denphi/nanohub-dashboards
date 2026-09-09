@@ -7,6 +7,8 @@ Uses nanohub-remote for authentication.
 import requests
 from typing import Dict, List, Optional, Any
 from pathlib import Path
+from datetime import datetime
+from urllib.parse import urlencode
 import json
 import re
 import os
@@ -59,8 +61,18 @@ def _is_jupyterlab():
     except:
         return False
 
+def _in_ipython():
+    """Check whether an IPython/Jupyter environment is active."""
+    try:
+        from IPython import get_ipython
+        return get_ipython() is not None
+    except ImportError:
+        return False
+
 def _display_in_jupyter(file_path, height=800):
     """Display HTML file in Jupyter using iframe or new tab."""
+    if not _in_ipython():
+        return False
     try:
         from IPython.display import IFrame, display
         import webbrowser
@@ -80,6 +92,8 @@ def _display_in_jupyter(file_path, height=800):
 
 def _display_html_in_jupyter(file_path):
     """Display HTML content directly in Jupyter (for forms with hidden parameters)."""
+    if not _in_ipython():
+        return False
     try:
         from IPython.display import HTML, display
         import webbrowser
@@ -204,10 +218,18 @@ class DashboardClient:
             else:
                 raise APIError(f"Unsupported HTTP method: {method}")
 
-            # Check for authentication errors
+            # Check for authentication errors. The API explains *why* access
+            # was refused (which group, which state, who the owner is), so
+            # surface that instead of a generic message.
             if response.status_code == 403:
+                detail = ""
+                try:
+                    body = response.json()
+                    detail = body.get('message', body.get('error', ''))
+                except Exception:
+                    detail = (response.text or "").strip()[:300]
                 raise AuthenticationError(
-                    "Authentication failed or insufficient permissions")
+                    detail or "Authentication failed or insufficient permissions")
 
             # Check for other errors
             if response.status_code >= 400:
@@ -246,8 +268,8 @@ class DashboardClient:
         Returns:
             List of dashboard metadata dictionaries
         """
-        params = filters or {}
-        return self._make_request('GET', 'dashboard/list', params=params)
+        return self._make_request(
+            'GET', self._with_query('dashboard/list', filters))
 
     def get_dashboard(self, dashboard_id: int) -> DashboardConfig:
         """
@@ -264,18 +286,62 @@ class DashboardClient:
         dashboard_data = data.get('dashboard', data)
         return DashboardConfig.from_dict(dashboard_data)
 
+    def _prepare_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Prepare a raw dashboard payload for the API.
+
+        The API expects 'queries', 'graphs', and 'params' as JSON strings;
+        dict/list values are serialized automatically. Graph 'plot'/'layout'
+        entries given as objects are serialized too.
+        """
+        payload = dict(data)
+        graphs = payload.get('graphs')
+        if isinstance(graphs, list):
+            prepared_graphs = []
+            for g in graphs:
+                if isinstance(g, dict):
+                    g = dict(g)
+                    for key in ('plot', 'layout'):
+                        if key in g and not isinstance(g[key], str):
+                            g[key] = json.dumps(g[key])
+                prepared_graphs.append(g)
+            payload['graphs'] = prepared_graphs
+        for key in ('queries', 'graphs', 'params'):
+            if key in payload and payload[key] is not None \
+                    and not isinstance(payload[key], str):
+                payload[key] = json.dumps(payload[key])
+        return payload
+
     def create_dashboard(self, dashboard: DashboardConfig) -> int:
         """
         Create a new dashboard.
-        
+
         Args:
             dashboard: DashboardConfig object
-            
+
         Returns:
             ID of created dashboard
         """
-        data = dashboard.to_dict()
-        response = self._make_request('POST', 'dashboard/create', json=data)
+        return self.create_dashboard_raw(dashboard.to_dict())
+
+    def create_dashboard_raw(self, data: Dict[str, Any]) -> int:
+        """
+        Create a new dashboard from a raw payload dictionary.
+
+        Unlike create_dashboard(), this performs no DashboardConfig
+        round-trip, so plot templates with placeholders are sent verbatim.
+
+        Args:
+            data: Dashboard fields (title, datasource_id, template_id,
+                  queries, graphs, params, state, group_id, alias, ...).
+                  queries/graphs/params may be JSON strings or plain
+                  dicts/lists.
+
+        Returns:
+            ID of created dashboard
+        """
+        payload = self._prepare_payload(data)
+        response = self._make_request('POST', 'dashboard/create', json=payload)
         return response.get('id')
 
     def update_dashboard(self, dashboard_id: int, dashboard: DashboardConfig) -> bool:
@@ -289,7 +355,25 @@ class DashboardClient:
         Returns:
             True if successful
         """
-        data = dashboard.to_dict()
+        return self.update_dashboard_raw(dashboard_id, dashboard.to_dict())
+
+    def update_dashboard_raw(self, dashboard_id: int, data: Dict[str, Any]) -> bool:
+        """
+        Update an existing dashboard from a raw payload dictionary.
+
+        Only the fields present in `data` are updated by the API, so this
+        supports partial updates (e.g. {'state': 1} to publish). Unlike
+        update_dashboard(), no DashboardConfig round-trip is performed.
+
+        Args:
+            dashboard_id: Dashboard ID to update
+            data: Fields to update. queries/graphs/params may be JSON
+                  strings or plain dicts/lists.
+
+        Returns:
+            True if successful
+        """
+        data = self._prepare_payload(data)
 
         # Encode as JSON
         json_data = json.dumps(data)
@@ -396,8 +480,12 @@ class DashboardClient:
         }
 
         try:
-            url = f"{self.api_base}/datasource/download"
-            response = self.session.post(url, data=data, stream=True)
+            # nanohub-remote Session has no .post(); make a direct request
+            # with the session's auth headers so we can stream the file.
+            url = f"{self.session.url}/dashboards/datasource/download"
+            response = requests.post(url, data=data,
+                                     headers=dict(self.session.headers),
+                                     stream=True)
 
             if response.status_code != 200:
                 raise DataSourceError(
@@ -437,8 +525,89 @@ class DashboardClient:
             'format': format
         }
 
-        return self._make_request('POST', f'datasource/query?id={datasource_id}',
+        return self._make_request('POST', f'datasource/query/{datasource_id}',
                                   json=data)
+
+    @staticmethod
+    def _with_query(endpoint: str, params: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Append query parameters to an endpoint path.
+
+        nanohub-remote's Session.requestGet() accepts only data/headers/timeout
+        and drops anything else, so GET filters have to travel in the URL.
+        Empty and None values are omitted.
+        """
+        if not params:
+            return endpoint
+        clean = {k: v for k, v in params.items() if v is not None and v != ''}
+        if not clean:
+            return endpoint
+        separator = '&' if '?' in endpoint else '?'
+        return f"{endpoint}{separator}{urlencode(clean)}"
+
+    # Data Source Catalog
+
+    def list_datasources(self, search: Optional[str] = None,
+                         group_id: Optional[int] = None,
+                         limit: int = 50, start: int = 0) -> Dict[str, Any]:
+        """
+        List the data sources the authenticated user can read.
+
+        Args:
+            search: Optional title substring filter.
+            group_id: Optional group filter (0 = global data sources).
+            limit: Maximum results to return.
+            start: Offset for pagination.
+
+        Returns:
+            {"datasources": [...], "total": n}
+        """
+        return self._make_request('GET', self._with_query('datasource/list', {
+            'search': search,
+            'group_id': group_id,
+            'limit': limit,
+            'start': start
+        }))
+
+    def describe_datasource(self, datasource_id: int, counts: bool = False,
+                            examples: int = 25) -> Dict[str, Any]:
+        """
+        Get the schema catalog for a data source.
+
+        Returns its tables and columns (including attached data sources), the
+        custom SQL functions available to queries, and example queries taken
+        from dashboards built on it — the most reliable guide to what the
+        columns actually mean.
+
+        Args:
+            datasource_id: Data source ID.
+            counts: Include a row count per table (runs extra queries).
+            examples: Maximum example queries to return; 0 to skip them.
+
+        Returns:
+            {"datasource": {...}, "tables": [...], "functions": [...], "examples": [...]}
+        """
+        return self._make_request('GET', self._with_query(
+            f'datasource/describe/{datasource_id}',
+            {'counts': 1 if counts else 0, 'examples': examples}))
+
+    def search_datasources(self, query: str, limit: int = 25) -> Dict[str, Any]:
+        """
+        Search accessible data sources for tables, columns and example queries.
+
+        Answers "where does this kind of data live?" across every data source
+        the user can read, without opening any database file.
+
+        Args:
+            query: Term to look for in titles, table names, column names and
+                   the SQL of dashboard queries.
+            limit: Maximum matches per section.
+
+        Returns:
+            {"query": ..., "datasources": [...], "tables": [...], "examples": [...]}
+        """
+        return self._make_request('GET', self._with_query(
+            'datasource/search', {'q': query, 'limit': limit}))
 
     # Template Operations
 
@@ -470,10 +639,12 @@ class DashboardClient:
         """
         Preview how a dashboard would be rendered by the server.
 
-        This calls the site controller's preview endpoint directly, which uses the same
-        view template as the regular dashboard view. This allows testing dashboard
-        configurations before creating or updating them. It renders the dashboard
-        HTML and plots without saving anything to the database.
+        This calls the API preview endpoint with the given configuration,
+        without saving anything to the database. Note that on production
+        deployments the API responds with a small relay form page (the real
+        render needs browser session authentication): opening the returned
+        HTML in a browser logged into nanoHUB and submitting it shows the
+        dashboard exactly as the site renders it.
 
         Args:
             datasource_id: Data source ID to use
@@ -533,6 +704,45 @@ class DashboardClient:
 
         # Return raw HTML
         return response.text
+
+    def generate_report(self, dashboard_id: int, output_file: Optional[str] = None,
+                        format: str = "html", include_tables: bool = True,
+                        max_table_rows: int = 50) -> str:
+        """
+        Generate a shareable report for a dashboard.
+
+        Executes the dashboard's queries and renders the result as a
+        standalone HTML report (interactive Plotly figures, summary
+        statistics, and data tables) or a Markdown document.
+
+        Args:
+            dashboard_id: Dashboard ID.
+            output_file: Output path (default: dashboard_{id}_report.{html|md}).
+            format: "html" or "markdown".
+            include_tables: Include per-figure data tables.
+            max_table_rows: Maximum rows per data table.
+
+        Returns:
+            Path to the generated report file.
+        """
+        from .report import ReportGenerator
+        return ReportGenerator(self).generate(
+            dashboard_id, output_file=output_file, format=format,
+            include_tables=include_tables, max_table_rows=max_table_rows)
+
+    def export_dashboard_data(self, dashboard_id: int, output_dir: str = ".") -> List[str]:
+        """
+        Export each dashboard query's results as CSV files.
+
+        Args:
+            dashboard_id: Dashboard ID.
+            output_dir: Directory to write CSV files into.
+
+        Returns:
+            List of written file paths.
+        """
+        from .report import ReportGenerator
+        return ReportGenerator(self).export_csv(dashboard_id, output_dir)
 
     def set_plot_transformer(self, transformer_func):
         """
@@ -724,48 +934,127 @@ class DashboardClient:
 
         return output_file
 
+    # Shared CSS for locally generated dashboard pages. Kept recessive so the
+    # user's own plot colors carry the page; supports print and small screens.
+    _PAGE_CSS = """
+        :root {
+            --nhd-bg: #f6f7f9;
+            --nhd-surface: #ffffff;
+            --nhd-ink: #1f2937;
+            --nhd-ink-secondary: #4b5563;
+            --nhd-ink-muted: #6b7280;
+            --nhd-border: #e5e7eb;
+            --nhd-warn-bg: #fff8e6;
+            --nhd-warn-border: #f0d58c;
+            --nhd-warn-ink: #7a5c00;
+            --nhd-error-bg: #fdf2f2;
+            --nhd-error-border: #e8b4b4;
+            --nhd-error-ink: #8a2424;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                         Helvetica, Arial, sans-serif;
+            margin: 0;
+            background: var(--nhd-bg);
+            color: var(--nhd-ink);
+            line-height: 1.5;
+        }
+        .nhd-page { max-width: 1400px; margin: 0 auto; padding: 24px 20px 48px; }
+        .nhd-header {
+            background: var(--nhd-surface);
+            border: 1px solid var(--nhd-border);
+            border-radius: 8px;
+            padding: 20px 24px;
+            margin-bottom: 20px;
+        }
+        .nhd-header h1 { margin: 0; font-size: 1.4rem; font-weight: 600; }
+        .nhd-header p { margin: 6px 0 0; color: var(--nhd-ink-secondary); }
+        .nhd-meta { margin-top: 8px; font-size: 0.8rem; color: var(--nhd-ink-muted); }
+        .nhd-meta a { color: inherit; }
+        /* Grid applies only to the fallback layout; template XML zones bring
+           their own CSS and must not be overridden. */
+        .nhd-default-zone { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; margin-bottom: 16px; }
+        .nhd-default-zone .dashboards-plot, .nhd-default-zone .dashboards-html-content {
+            background: var(--nhd-surface);
+            border: 1px solid var(--nhd-border);
+            border-radius: 8px;
+            padding: 8px;
+            min-height: 120px;
+            overflow: hidden;
+        }
+        .nhd-plot-pending { position: relative; min-height: 320px; }
+        .nhd-plot-pending::after {
+            content: "Loading\\2026";
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--nhd-ink-muted);
+            font-size: 0.85rem;
+        }
+        .nhd-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 160px;
+            padding: 16px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+        .nhd-state-empty { color: var(--nhd-ink-muted); }
+        .nhd-state-error {
+            background: var(--nhd-error-bg);
+            border: 1px solid var(--nhd-error-border);
+            color: var(--nhd-error-ink);
+        }
+        .nhd-state-warning {
+            background: var(--nhd-warn-bg);
+            border: 1px solid var(--nhd-warn-border);
+            color: var(--nhd-warn-ink);
+        }
+        @media print {
+            body { background: #fff; }
+            .nhd-page { max-width: none; padding: 0; }
+            .dashboards-plot, .dashboards-html-content, .nhd-header { border: none; break-inside: avoid; }
+        }
+    """
+
+    def _page_header_html(self, dashboard_config: DashboardConfig,
+                          dashboard_id: Optional[int] = None) -> str:
+        """Build the shared page header block for generated pages."""
+        generated = datetime.now().strftime('%Y-%m-%d %H:%M')
+        meta_parts = [f"Generated {generated} by nanohub-dashboards"]
+        if dashboard_id:
+            url = f"{self.base_url}/dashboards/{dashboard_id}"
+            meta_parts.append(f'<a href="{url}">View on nanoHUB</a>')
+        description = (f"<p>{dashboard_config.description}</p>"
+                       if dashboard_config.description else "")
+        return f"""
+    <div class="nhd-header">
+        <h1>{dashboard_config.title}</h1>
+        {description}
+        <div class="nhd-meta">{' &middot; '.join(meta_parts)}</div>
+    </div>"""
+
     def _create_empty_dashboard_html(self, dashboard_config: DashboardConfig) -> str:
         """Create HTML for a dashboard with no data source."""
-        return f"""
-<!DOCTYPE html>
-<html>
+        return f"""<!DOCTYPE html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{dashboard_config.title}</title>
-    <link rel="stylesheet" href="https://nanohub.org/app/cache/site/site.css">
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background-color: #f5f5f5;
-        }}
-        .header {{
-            background-color: white;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        h1 {{
-            margin: 0 0 10px 0;
-            color: #333;
-        }}
-        .warning {{
-            background-color: #fff3cd;
-            color: #856404;
-            padding: 15px;
-            border-radius: 8px;
-            border: 1px solid #ffeaa7;
-        }}
-    </style>
+    <style>{self._PAGE_CSS}</style>
 </head>
 <body>
-    <div class="header">
-        <h1>{dashboard_config.title}</h1>
-        <p>{dashboard_config.description}</p>
-    </div>
-    <div class="warning">
-        <strong>No Data Source:</strong> This dashboard has no data source configured.
+    <div class="nhd-page">
+        {self._page_header_html(dashboard_config, dashboard_config.id)}
+        <div class="nhd-state nhd-state-warning">
+            <span><strong>No data source:</strong>&nbsp;this dashboard has no data source configured.</span>
+        </div>
     </div>
 </body>
 </html>
@@ -801,7 +1090,7 @@ class DashboardClient:
                 print(f"⚠ Warning: Could not parse template XML: {e}")
 
         # Default grid layout
-        html_template = '<div id="main" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px;"></div>'
+        html_template = '<div id="main" class="nhd-default-zone"></div>'
         zones = {'main': None}
         return html_template, zones, None
 
@@ -1198,88 +1487,183 @@ class DashboardClient:
 
     def _create_dashboard_html(self, dashboard_config: DashboardConfig,
                                html_template: str, plots: Dict) -> str:
-        """Create complete HTML page with template and plots."""
+        """
+        Create a complete, self-contained HTML page with template and plots.
+
+        The page renders plots lazily (as they scroll into view), shows a
+        loading placeholder while Plotly initializes, and falls back to
+        friendly empty/error states instead of blank charts.
+        """
         # Get base URL from session
         base_url = self.session.url.replace('/api', '') if hasattr(self.session, 'url') else 'https://nanohub.org'
+        cdn_plotly = "https://cdn.plot.ly/plotly-2.35.2.min.js"
 
         # Build HTML in parts to avoid f-string issues with template containing {}
         html_header = f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{dashboard_config.title}</title>
-    <link rel="stylesheet" type="text/css" media="screen" href="{base_url}/app/cache/site/site.css" />
-    <link rel="stylesheet" href="{base_url}/app/components/com_dashboards/site/assets/css/dashboards.css" type="text/css" />
-    <link rel="stylesheet" href="{base_url}/app/components/com_dashboards/site/assets/css/pivottable.css" type="text/css" />
-    <script src="{base_url}/core/assets/js/jquery.js" type="text/javascript"></script>
-    <script src="{base_url}/core/assets/js/jquery.ui.js" type="text/javascript"></script>
-    <script src="{base_url}/core/assets/js/jquery.fancybox.js" type="text/javascript"></script>
-    <script src="{base_url}/app/components/com_dashboards/site/assets/js/pivottable.min.js" type="text/javascript"></script>
+    <style>{self._PAGE_CSS}</style>
     <script src="{base_url}/app/components/com_dashboards/site/assets/js/plotly.min.js" type="text/javascript"></script>
+    <script>
+        // Fall back to the Plotly CDN if the nanoHUB-hosted copy is unreachable
+        if (typeof Plotly === 'undefined') {{
+            document.write('<scr' + 'ipt src="{cdn_plotly}"></scr' + 'ipt>');
+        }}
+    </script>
 </head>
 <body>
-
+    <div class="nhd-page">
+    {self._page_header_html(dashboard_config, dashboard_config.id)}
 """
 
         # Insert template (may contain {} so can't use f-string)
         html_body = html_template if html_template else ""
 
         html_footer = f"""
+    </div>
     <script>
-        // Render all plots and HTML content
         const plots = {json.dumps(plots)};
+    </script>
+    <script>
+    (function () {{
+        'use strict';
 
-        for (const [plotId, plotData] of Object.entries(plots)) {{
-            let element = document.getElementById(plotId);
+        function stateBlock(cls, message) {{
+            var div = document.createElement('div');
+            div.className = 'nhd-state ' + cls;
+            div.setAttribute('role', cls === 'nhd-state-error' ? 'alert' : 'note');
+            div.textContent = message;
+            return div;
+        }}
 
-            // If element doesn't exist, create it and append to the appropriate zone
-            if (!element) {{
-                console.log(`Creating element: ${{plotId}} in zone ${{plotData.zone || 'main'}}`);
-                const zoneName = plotData.zone || 'main';
-                const zoneElement = document.getElementById(zoneName);
-
-                if (zoneElement) {{
-                    element = document.createElement('div');
-                    element.id = plotId;
-                    element.className = plotData.html ? 'dashboards-html-content' : 'dashboards-plot';
-                    zoneElement.appendChild(element);
-                }} else {{
-                    console.error(`Zone not found: ${{zoneName}} for plot ${{plotId}}`);
-                    continue;
+        function hasNonEmptyArray(obj, depth) {{
+            for (var k in obj) {{
+                if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+                var v = obj[k];
+                if (Array.isArray(v)) {{
+                    if (v.length > 0) return true;
+                }} else if (depth > 0 && v && typeof v === 'object') {{
+                    if (hasNonEmptyArray(v, depth - 1)) return true;
                 }}
             }}
+            return false;
+        }}
 
-            // Check if this is HTML content
+        function traceHasData(trace) {{
+            if (!trace || typeof trace !== 'object') return false;
+            // Indicator traces carry a scalar value; image traces a source string
+            if (trace.value !== undefined && trace.value !== null) return true;
+            if (typeof trace.source === 'string' && trace.source.length > 0) return true;
+            // Any non-empty array anywhere in the trace (x/y, lat/lon, values,
+            // open/high/low/close, node.label, cells.values, ...) counts as data.
+            // False positives just render an empty chart; never hide a real one.
+            return hasNonEmptyArray(trace, 2);
+        }}
+
+        function ensureElement(plotId, plotData) {{
+            var element = document.getElementById(plotId);
+            if (element) return element;
+            var zoneName = plotData.zone || 'main';
+            var zoneElement = document.getElementById(zoneName);
+            if (!zoneElement) {{
+                console.error('Zone not found: ' + zoneName + ' for ' + plotId);
+                return null;
+            }}
+            element = document.createElement('div');
+            element.id = plotId;
+            element.className = plotData.html ? 'dashboards-html-content' : 'dashboards-plot';
+            zoneElement.appendChild(element);
+            return element;
+        }}
+
+        function renderEntry(plotId, plotData) {{
+            var element = document.getElementById(plotId);
+            if (!element) return;
+            element.classList.remove('nhd-plot-pending');
+
             if (plotData.html) {{
                 try {{
                     element.innerHTML = plotData.html;
-                    console.log(`Rendered HTML content: ${{plotId}}`);
                 }} catch (e) {{
-                    console.error(`Error rendering HTML ${{plotId}}:`, e);
-                    element.innerHTML = '<p style="color: red;">Error rendering HTML: ' + e.message + '</p>';
+                    element.innerHTML = '';
+                    element.appendChild(stateBlock('nhd-state-error', 'Error rendering HTML: ' + e.message));
                 }}
+                return;
             }}
-            // Otherwise it's a Plotly chart
-            else if (plotData.plot && plotData.layout) {{
-                try {{
-                    const data = JSON.parse(plotData.plot);
-                    const layout = JSON.parse(plotData.layout);
 
-                    // Set responsive layout
-                    layout.autosize = true;
-                    layout.margin = layout.margin || {{}};
+            if (!plotData.plot || !plotData.layout) {{
+                element.appendChild(stateBlock('nhd-state-empty', 'No data available'));
+                return;
+            }}
 
-                    Plotly.newPlot(plotId, data, layout, {{responsive: true}});
+            try {{
+                var data = JSON.parse(plotData.plot);
+                var layout = JSON.parse(plotData.layout);
 
-                    console.log(`Rendered plot: ${{plotId}}`);
-                }} catch (e) {{
-                    console.error(`Error rendering plot ${{plotId}}:`, e);
-                    element.innerHTML = '<p style="color: red;">Error rendering plot: ' + e.message + '</p>';
+                if (!Array.isArray(data) || data.length === 0 || !data.some(traceHasData)) {{
+                    element.appendChild(stateBlock('nhd-state-empty', 'No data available'));
+                    return;
                 }}
-            }} else {{
-                console.warn(`Invalid data for: ${{plotId}}`);
+
+                layout.autosize = true;
+                layout.margin = layout.margin || {{}};
+
+                Plotly.newPlot(element, data, layout, {{
+                    responsive: true,
+                    displaylogo: false
+                }});
+            }} catch (e) {{
+                console.error('Error rendering plot ' + plotId + ':', e);
+                element.innerHTML = '';
+                element.appendChild(stateBlock('nhd-state-error', 'Error rendering plot: ' + e.message));
             }}
         }}
+
+        // Create all containers up-front (preserves layout), render lazily.
+        var pending = [];
+        for (var plotId in plots) {{
+            if (!Object.prototype.hasOwnProperty.call(plots, plotId)) continue;
+            var element = ensureElement(plotId, plots[plotId]);
+            if (!element) continue;
+            if (!plots[plotId].html) element.classList.add('nhd-plot-pending');
+            pending.push(plotId);
+        }}
+
+        if (typeof Plotly === 'undefined') {{
+            pending.forEach(function (plotId) {{
+                var element = document.getElementById(plotId);
+                if (element && !plots[plotId].html) {{
+                    element.classList.remove('nhd-plot-pending');
+                    element.appendChild(stateBlock('nhd-state-error',
+                        'Plotly could not be loaded (offline?). Plots cannot be rendered.'));
+                }} else if (element) {{
+                    renderEntry(plotId, plots[plotId]);
+                }}
+            }});
+            return;
+        }}
+
+        if ('IntersectionObserver' in window) {{
+            var observer = new IntersectionObserver(function (entries) {{
+                entries.forEach(function (entry) {{
+                    if (entry.isIntersecting) {{
+                        observer.unobserve(entry.target);
+                        renderEntry(entry.target.id, plots[entry.target.id]);
+                    }}
+                }});
+            }}, {{ rootMargin: '200px' }});
+            pending.forEach(function (plotId) {{
+                observer.observe(document.getElementById(plotId));
+            }});
+        }} else {{
+            pending.forEach(function (plotId) {{
+                renderEntry(plotId, plots[plotId]);
+            }});
+        }}
+    }})();
     </script>
 </body>
 </html>

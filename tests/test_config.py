@@ -311,3 +311,34 @@ class TestDashboardConfig:
         assert restored.params == original.params
         assert restored.state == original.state
         assert restored.group_id == original.group_id
+
+
+class TestFromDictGraphIndexing:
+    """Graphs parsed by from_dict must keep their raw-list position and html.
+
+    Regression test: when every Graph kept the default index of 0, renderers
+    matched all graphs to raw_graphs[0] and rendered the first graph's HTML
+    repeatedly instead of the actual plots.
+    """
+
+    def test_graphs_keep_positional_index_and_html(self):
+        import json
+        graphs = [
+            {"query": "", "zone": "HEADER", "priority": 0,
+             "plot": "", "layout": "", "html": "<h1>Header</h1>"},
+            {"query": "_sql.A", "zone": "main", "priority": 1,
+             "plot": json.dumps([{"type": "bar"}]),
+             "layout": "{}", "html": ""},
+            {"query": "_sql.B", "zone": "main", "priority": 2,
+             "plot": json.dumps([{"type": "scatter"}]),
+             "layout": "{}", "html": ""},
+        ]
+        config = DashboardConfig.from_dict({
+            "title": "T",
+            "graphs": json.dumps(graphs),
+        })
+
+        assert [g.index for g in config.graphs] == [0, 1, 2]
+        assert config.graphs[0].html == "<h1>Header</h1>"
+        assert config.graphs[1].html == ""
+        assert config.graphs[2].query == "_sql.B"

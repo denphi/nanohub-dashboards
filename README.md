@@ -27,10 +27,40 @@ Note: The package is published as `nanohub-dashboards` on PyPI but imported as `
 - Preview dashboards locally before saving
 - Save changes back to nanoHUB
 - Export dashboards to standalone HTML files
-- **NEW:** Render individual plots and graphs locally without API access
+- Render individual plots and graphs locally without API access
 - Full support for Plotly-based visualizations
+- **NEW (0.2.1):** `connect()` helper — authenticate from `NANOHUB_TOKEN` env var or a `.env` file
+- **NEW (0.2.1):** Report generation — standalone HTML or Markdown reports with figures, summary statistics, and data tables
+- **NEW (0.2.1):** CSV export of dashboard query results
+- **NEW (0.2.1):** Data source catalog — search and describe data sources, with example queries mined from dashboards
+- **NEW (0.2.1):** Lossless raw create/update (`create_dashboard_raw` / `update_dashboard_raw`) for partial updates that keep `%PLACEHOLDER` plot templates intact
 
 ## Quick Start
+
+### Connecting
+
+The simplest way to get a client is `connect()`, which reads your token from
+the `NANOHUB_TOKEN` environment variable or a `.env` file in the working
+directory (`NANOHUB_URL` selects the instance, default `https://nanohub.org`):
+
+```python
+from nanohubdashboard import connect
+
+client = connect()                                # env / .env
+client = connect(token="...", url="https://dev.nanohub.org")
+
+client.list_dashboards({"limit": 10})
+client.query_datasource(12, "SELECT * FROM tool_usage LIMIT 5")
+client.visualize(19, output_file="dashboard.html", open_browser=False)
+```
+
+### Generating Reports
+
+```python
+client.generate_report(19, "report.html")                    # interactive HTML
+client.generate_report(19, "report.md", format="markdown")   # text summary
+client.export_dashboard_data(19, "data/")                    # CSV per query
+```
 
 ### Basic Usage
 
@@ -203,12 +233,23 @@ Represents a single plot trace within a graph:
 
 Low-level API client for direct API access:
 
+- `list_dashboards(filters)`: List accessible dashboards
 - `get_dashboard(dashboard_id)`: Get dashboard configuration
 - `create_dashboard(dashboard_config)`: Create a new dashboard
+- `create_dashboard_raw(data)`: Create from a raw dict (placeholders kept verbatim)
 - `update_dashboard(dashboard_id, dashboard_config)`: Update dashboard
+- `update_dashboard_raw(dashboard_id, data)`: Partial update from a raw dict
 - `delete_dashboard(dashboard_id)`: Delete a dashboard
-- `preview_dashboard(...)`: Preview dashboard rendering
+- `list_datasources(search, group_id)`: List readable data sources
+- `describe_datasource(id, counts, examples)`: Schema, SQL functions and example queries
+- `search_datasources(query)`: Find tables, columns and example queries across data sources
+- `list_templates()` / `get_template(id)`: Layout templates
+- `query_datasource(id, sql, format)`: Run a SELECT against a datasource
+- `upload_datasource(...)` / `download_datasource(...)`: Move SQLite files
+- `preview_dashboard(...)`: Server-side preview rendering
 - `visualize(...)`: Generate local visualization
+- `generate_report(id, output, format)`: HTML/Markdown report
+- `export_dashboard_data(id, dir)`: CSV export of query results
 
 ## Authentication
 

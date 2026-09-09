@@ -79,16 +79,20 @@ class DashboardConfig:
         
         # Convert graph dicts to Graph objects, handling API field names
         graphs = []
-        for g in graphs_list:
+        for position, g in enumerate(graphs_list):
             try:
                 # API uses 'type', 'plot', 'layout' - convert to our field names
+                # 'index' keeps the position in the raw graphs list so
+                # renderers can match each Graph to its raw plot template.
                 graph_dict = {
                     'query': g.get('query', ''),
                     'plot_type': g.get('type', g.get('plot_type', 'scatter')),
                     'zone': g.get('zone', 'main'),
                     'priority': g.get('priority', 0),
                     'group': g.get('group', ''),
-                    'group_menu': g.get('group-menu', g.get('group_menu', False))
+                    'group_menu': g.get('group-menu', g.get('group_menu', False)),
+                    'html': g.get('html', '') or '',
+                    'index': position
                 }
                 
                 # Handle plot config
